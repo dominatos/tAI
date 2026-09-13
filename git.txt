@@ -1,0 +1,8 @@
+# Clean up fork to be 1 commit ahead of original repo
+
+git remote add upstream https://github.com/bjarneo/tAI.git
+git fetch upstream
+git reset --hard upstream/main
+git add .
+git commit -m "Add Ollama and OpenCode provider support"
+git push --force origin main

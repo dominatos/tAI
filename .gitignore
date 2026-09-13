@@ -5,4 +5,8 @@ pyproject.backup.toml
 terminal_ai_assistant.egg-info/
 .env
 AGENTS.md
+prompt.txt
+INSTRUCTIONS.md
+ollama.md
+opencode.md
 __pycache__/

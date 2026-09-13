@@ -2,6 +2,8 @@ import os
 import sys
 import re
 import signal
+import json
+import uuid
 from types import FrameType
 from rich.console import Console
 from rich.panel import Panel
@@ -12,6 +14,7 @@ from openai import OpenAI
 from google import genai
 from google.genai import types
 import anthropic
+import requests as http_requests
 try:
     from tai.config import load_config, create_config
 except ModuleNotFoundError:
@@ -33,6 +36,12 @@ class Provider:
             return OpenAI(api_key=api_key)
         elif provider == "openrouter":
             return OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+        elif provider == "ollama":
+            return OpenAI(api_key="ollama", base_url="http://localhost:11434/v1")
+        elif provider == "opencode":
+            return OpenCodeClient(
+                base_url=self.config.get("base_url", "http://localhost:4096")
+            )
         elif provider == "google":
             return genai.Client(api_key=api_key)
         elif provider == "anthropic":
@@ -45,7 +54,7 @@ class Provider:
         model = self.config.get("model")
 
         try:
-            if provider in ["openai", "openrouter"]:
+            if provider in ["openai", "openrouter", "ollama"]:
                 return self.client.chat.completions.create(
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -53,6 +62,12 @@ class Provider:
                     ],
                     model=model,
                     stream=True,
+                )
+            elif provider == "opencode":
+                return self.client.send_prompt(
+                    query=query,
+                    system_prompt=system_prompt,
+                    model_id=model,
                 )
             elif provider == "google":
                 return self.client.models.generate_content_stream(
@@ -78,6 +93,52 @@ class Provider:
                 )
             )
             sys.exit(1)
+
+
+class OpenCodeClient:
+    """Client for OpenCode server HTTP API."""
+
+    def __init__(self, base_url="http://localhost:4096"):
+        self.base_url = base_url
+        self.session_id = None
+
+    def _create_session(self):
+        resp = http_requests.post(
+            f"{self.base_url}/session",
+            json={"title": f"tAI query {uuid.uuid4().hex[:8]}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        self.session_id = resp.json()["id"]
+
+    def send_prompt(self, query, system_prompt, model_id=None):
+        """Send a prompt to OpenCode and return the response text."""
+        if not self.session_id:
+            self._create_session()
+
+        payload = {
+            "parts": [{"type": "text", "text": query}],
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        if model_id and "/" in model_id:
+            provider_id, model_name = model_id.split("/", 1)
+            payload["model"] = {"providerID": provider_id, "modelID": model_name}
+
+        resp = http_requests.post(
+            f"{self.base_url}/session/{self.session_id}/message",
+            json=payload,
+            timeout=120,
+        )
+        resp.raise_for_status()
+
+        data = resp.json()
+        text_parts = []
+        for part in data.get("parts", []):
+            if part.get("type") == "text":
+                text_parts.append(part.get("text", ""))
+
+        return "".join(text_parts)
 
 
 class CommandLineInterface:
@@ -120,7 +181,7 @@ class CommandLineInterface:
         with self.console.status("[bold green]Waiting for response...[/bold green]"):
             for chunk in stream:
                 content = None
-                if provider in ["openai", "openrouter"]:
+                if provider in ["openai", "openrouter", "ollama"]:
                     content = chunk.choices[0].delta.content
                 elif provider == "google":
                     content = chunk.text
@@ -171,8 +232,15 @@ class CommandLineInterface:
         signal.signal(signal.SIGINT, self.handle_sigint)
 
         system_prompt = self._generate_system_prompt()
-        stream = self.provider.send_chat_query(query, system_prompt)
-        response = self._handle_stream(stream)
+        provider = self.config.get("provider")
+
+        if provider == "opencode":
+            with self.console.status("[bold green]Waiting for response...[/bold green]"):
+                response = self.provider.send_chat_query(query, system_prompt)
+        else:
+            stream = self.provider.send_chat_query(query, system_prompt)
+            response = self._handle_stream(stream)
+
         command = self._extract_command(response)
 
         if command:

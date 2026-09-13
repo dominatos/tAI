@@ -1,6 +1,7 @@
 anthropic
-google-generativeai
+google-genai
 groq
 inquirer
 openai
+requests
 rich
